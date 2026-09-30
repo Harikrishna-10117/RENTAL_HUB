@@ -26,7 +26,15 @@ function errorHandler(error, req, res, next) {
   let errorCode = error.errorCode || 'INTERNAL_ERROR';
   let message = error.message || 'An unexpected error occurred';
 
-  if (error.name === 'ValidationError') {
+  if (error.type === 'entity.parse.failed') {
+    statusCode = 400;
+    errorCode = 'INVALID_JSON';
+    message = 'Request body must contain valid JSON';
+  } else if (error.type === 'entity.too.large') {
+    statusCode = 413;
+    errorCode = 'REQUEST_TOO_LARGE';
+    message = 'Request body exceeds the allowed size';
+  } else if (error.name === 'ValidationError') {
     statusCode = 400;
     errorCode = 'VALIDATION_ERROR';
     message = Object.values(error.errors).map((entry) => entry.message).join(', ');

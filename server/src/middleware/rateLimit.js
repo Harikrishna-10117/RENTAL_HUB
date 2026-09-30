@@ -80,4 +80,10 @@ function respond(count, res, next) {
   return next();
 }
 
+function resetMemoryBuckets() {
+  requestBuckets.clear();
+  lastSweep = 0;
+}
+
+rateLimit.resetMemoryBuckets = resetMemoryBuckets;
 module.exports = rateLimit;

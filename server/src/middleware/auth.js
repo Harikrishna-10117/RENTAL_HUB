@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { AppError, asyncHandler } = require('../utils/api');
+const { normalizeUserRole } = require('../services/userRoles');
 
 const protect = asyncHandler(async (req, res, next) => {
   const header = req.get('authorization') || '';
@@ -15,6 +16,10 @@ const protect = asyncHandler(async (req, res, next) => {
   }
   const user = await User.findById(payload.sub);
   if (!user || !user.active) throw new AppError('Account is unavailable', 401, 'ACCOUNT_UNAVAILABLE');
+  await normalizeUserRole(user);
+  if ((payload.ver ?? 0) !== (user.tokenVersion ?? 0)) {
+    throw new AppError('Session has expired. Please sign in again.', 401, 'SESSION_REVOKED');
+  }
   req.user = user;
   next();
 });

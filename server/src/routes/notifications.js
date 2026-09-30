@@ -3,7 +3,7 @@ const Notification = require('../models/Notification');
 const { AppError, asyncHandler, sendSuccess } = require('../utils/api');
 const { protect } = require('../middleware/auth');
 const validate = require('../middleware/validate');
-const { objectId } = require('../utils/validation');
+const { objectId } = require('../validators');
 
 const router = express.Router();
 router.use(protect);

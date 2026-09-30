@@ -4,9 +4,15 @@ const Equipment = require('../models/Equipment');
 const { AppError, asyncHandler, sendSuccess } = require('../utils/api');
 const { protect, allowRoles } = require('../middleware/auth');
 const validate = require('../middleware/validate');
-const { body, objectId } = require('../utils/validation');
+const { body, objectId } = require('../validators');
 
 const router = express.Router();
+
+router.get('/mine', protect, allowRoles('owner'), asyncHandler(async (req, res) => {
+  const packages = await Package.find({ owner: req.user.id }).sort({ createdAt: -1 })
+    .populate({ path: 'equipment', select: 'name images dailyRate location active status category', populate: { path: 'category', select: 'name names' } });
+  return sendSuccess(res, 'Your rental packages', packages);
+}));
 
 router.get('/', asyncHandler(async (req, res) => {
   const packages = await Package.find({ active: true })

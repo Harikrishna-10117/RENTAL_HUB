@@ -1,8 +1,14 @@
 const mongoose = require('mongoose');
 
+const equipmentQuantitySchema = new mongoose.Schema({
+  equipment: { type: mongoose.Schema.Types.ObjectId, ref: 'Equipment', required: true },
+  quantity: { type: Number, required: true, min: 1, max: 1000, default: 1 }
+}, { _id: false });
+
 const reservationHoldSchema = new mongoose.Schema({
   customer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   equipment: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Equipment', required: true }],
+  equipmentQuantities: { type: [equipmentQuantitySchema], default: [] },
   assets: [{ type: mongoose.Schema.Types.ObjectId, ref: 'EquipmentAsset', index: true }],
   package: { type: mongoose.Schema.Types.ObjectId, ref: 'Package' },
   startDate: { type: Date, required: true, index: true },

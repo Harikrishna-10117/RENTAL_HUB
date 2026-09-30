@@ -1,9 +1,15 @@
 const mongoose = require('mongoose');
 
+const equipmentQuantitySchema = new mongoose.Schema({
+  equipment: { type: mongoose.Schema.Types.ObjectId, ref: 'Equipment', required: true },
+  quantity: { type: Number, required: true, min: 1, max: 1000, default: 1 }
+}, { _id: false });
+
 const bookingSchema = new mongoose.Schema({
   customer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   equipment: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Equipment', required: true }],
+  equipmentQuantities: { type: [equipmentQuantitySchema], default: [] },
   assets: [{ type: mongoose.Schema.Types.ObjectId, ref: 'EquipmentAsset', index: true }],
   requestedEquipment: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Equipment' }],
   package: { type: mongoose.Schema.Types.ObjectId, ref: 'Package' },
@@ -24,7 +30,12 @@ const bookingSchema = new mongoose.Schema({
   payment: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment' },
   delivery: { type: mongoose.Schema.Types.ObjectId, ref: 'Delivery' },
   hold: { type: mongoose.Schema.Types.ObjectId, ref: 'ReservationHold' },
+  rental: { type: mongoose.Schema.Types.ObjectId, ref: 'Rental', default: null, index: true },
+  deliveries: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Delivery' }],
   notes: { type: String, default: '' },
+  cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  cancellationReason: { type: String, trim: true, maxlength: 1000, default: '' },
+  cancelledAt: { type: Date, default: null },
   depositRefunded: { type: Boolean, default: false }
 }, { timestamps: true });
 

@@ -11,7 +11,9 @@
     "dev": "concurrently -k -n api,web -c green,cyan \"npm:dev --workspace server\" \"npm:dev --workspace client\"",
     "build": "npm run build --workspace client",
     "start": "npm run start --workspace server",
-    "seed": "npm run seed --workspace server"
+    "admin:promote": "npm run admin:promote --workspace server",
+    "demo:seed": "npm run demo:seed --workspace server --",
+    "demo:clean": "npm run demo:clean --workspace server"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

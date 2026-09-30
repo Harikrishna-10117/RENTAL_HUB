@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "seed": "node src/seed/seed.js",
+    "admin:promote": "node src/scripts/promoteAdmin.js",
+    "demo:seed": "node src/scripts/seedDemoListings.js",
+    "demo:clean": "node src/scripts/cleanDemoData.js",
     "test": "node --test"
   },
   "dependencies": {
@@ -19,7 +21,9 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.5",
-    "morgan": "^1.10.0"
+    "morgan": "^1.10.0",
+    "multer": "^2.4.0",
+    "socket.io": "^4.8.4"
   },
   "devDependencies": {
     "mongodb-memory-server": "^11.3.0",
