@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { validateDates } = require('../src/services/availability');
 const { AppError } = require('../src/utils/api');
+const { predictFromMaintenanceHistory } = require('../src/services/maintenancePrediction');
 
 test('validateDates normalizes to UTC day boundaries and counts rental nights', () => {
   const start = new Date();
@@ -24,4 +25,27 @@ test('validateDates rejects reversed and past ranges', () => {
   const yesterday = new Date(now.getTime() - 86400000);
   const today = new Date(now);
   assert.throws(() => validateDates(yesterday.toISOString(), today.toISOString()), AppError);
+});
+
+test('maintenance prediction requires enough real completed service history', () => {
+  const asOf = new Date('2026-09-30T00:00:00.000Z');
+  const insufficient = predictFromMaintenanceHistory([
+    { status: 'COMPLETED', serviceDate: '2026-01-01T00:00:00.000Z' },
+    { status: 'SCHEDULED', serviceDate: '2026-06-01T00:00:00.000Z' }
+  ], asOf);
+  assert.deepEqual(insufficient, {
+    available: false,
+    message: 'Insufficient usage history for a maintenance prediction.',
+    completedServiceCount: 1
+  });
+
+  const prediction = predictFromMaintenanceHistory([
+    { status: 'COMPLETED', serviceDate: '2026-01-01T00:00:00.000Z' },
+    { status: 'COMPLETED', serviceDate: '2026-02-01T00:00:00.000Z' },
+    { status: 'COMPLETED', serviceDate: '2026-03-04T00:00:00.000Z' }
+  ], asOf);
+  assert.equal(prediction.available, true);
+  assert.equal(prediction.basis.completedServiceCount, 3);
+  assert.equal(prediction.basis.medianServiceIntervalDays, 31);
+  assert.equal(prediction.predictedNextServiceDate.toISOString(), '2026-04-04T00:00:00.000Z');
 });

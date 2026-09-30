@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const Booking = require('../models/Booking');
+const Rental = require('../models/Rental');
 const ReservationHold = require('../models/ReservationHold');
 const Equipment = require('../models/Equipment');
 const Payment = require('../models/Payment');
@@ -16,7 +17,7 @@ const { toMinorUnits } = require('../services/ledger');
 const { AppError, asyncHandler, sendSuccess } = require('../utils/api');
 const { protect, allowRoles } = require('../middleware/auth');
 const validate = require('../middleware/validate');
-const { body, objectId, bookingDateRange } = require('../utils/validation');
+const { body, objectId, bookingDateRange } = require('../validators');
 const idempotency = require('../middleware/idempotency');
 const { validateDates, assertAvailable, withReservationLocks } = require('../services/availability');
 const { resolveLegacyEquipmentIds, setAssetsLifecycle, inspectAssets } = require('../services/inventory');
@@ -24,9 +25,6 @@ const notify = require('../utils/notifications');
 
 const router = express.Router();
 router.use(protect);
-router.use((req, res, next) => (
-  ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) ? idempotency(req, res, next) : next()
-));
 
 function presentBooking(booking) {
   const value = booking.toObject ? booking.toObject() : { ...booking };
@@ -36,31 +34,44 @@ function presentBooking(booking) {
 
 router.post('/holds',
   allowRoles('customer'),
+  idempotency,
   body('equipmentIds').optional().isArray({ min: 1, max: 10 }).withMessage('Choose between 1 and 10 equipment items'),
   body('equipmentIds.*').optional().isMongoId().withMessage('Equipment IDs must be valid'),
+  body('items').optional().isArray({ min: 1, max: 10 }).withMessage('Choose between 1 and 10 equipment items'),
+  body('items.*.equipmentId').optional().isMongoId().withMessage('Equipment IDs must be valid'),
+  body('items.*.quantity').optional().isInt({ min: 1, max: 1000 }).withMessage('Quantity must be between 1 and 1000'),
+  body('quantity').optional().isInt({ min: 1, max: 1000 }).withMessage('Quantity must be between 1 and 1000'),
   body('packageId').optional().isMongoId().withMessage('packageId must be a valid ID'),
   ...bookingDateRange,
   validate,
   asyncHandler(async (req, res) => {
     const { start, end } = validateDates(req.body.startDate, req.body.endDate);
-    if (Boolean(req.body.packageId) === Boolean(req.body.equipmentIds)) {
+    const providedItems = Array.isArray(req.body.items) ? req.body.items
+      : Array.isArray(req.body.equipmentIds) ? req.body.equipmentIds.map((equipmentId) => ({ equipmentId, quantity: req.body.quantity || 1 }))
+        : null;
+    if (Boolean(req.body.packageId) === Boolean(providedItems)) {
       throw new AppError('Provide either packageId or equipmentIds', 400, 'INVALID_RESERVATION_ITEMS');
     }
     const rentalPackage = req.body.packageId
       ? await Package.findOne({ _id: req.body.packageId, active: true })
       : null;
     if (req.body.packageId && !rentalPackage) throw new AppError('Package not found', 404, 'NOT_FOUND');
-    const requestedIds = rentalPackage ? rentalPackage.equipment.map(String) : req.body.equipmentIds;
+    const requestedIds = rentalPackage ? rentalPackage.equipment.map(String) : providedItems.map((item) => item.equipmentId);
     const resolvedIds = await resolveLegacyEquipmentIds(requestedIds);
     const ids = [...new Set(resolvedIds)];
     if (ids.length !== requestedIds.length) throw new AppError('Duplicate equipment IDs are not allowed', 400, 'DUPLICATE_ITEMS');
+    const equipmentQuantities = resolvedIds.map((equipment, index) => ({
+      equipment,
+      quantity: rentalPackage ? 1 : Number(providedItems[index].quantity || 1)
+    }));
     const hold = await withReservationLocks(ids, async () => {
       const items = await Equipment.find({ _id: { $in: ids }, active: true, status: 'available' });
       if (items.length !== ids.length) throw new AppError('One or more equipment items are unavailable', 404, 'ITEM_UNAVAILABLE');
-      await assertAvailable(ids, start, end);
+      await assertAvailable(ids, start, end, undefined, equipmentQuantities);
       return ReservationHold.create({
         customer: req.user.id,
         equipment: ids,
+        equipmentQuantities,
         assets: items.map((item) => item.assetRef),
         ...(rentalPackage ? { package: rentalPackage._id } : {}),
         startDate: start,
@@ -72,7 +83,7 @@ router.post('/holds',
   })
 );
 
-router.delete('/holds/:id', objectId(), validate, asyncHandler(async (req, res) => {
+router.delete('/holds/:id', allowRoles('customer'), idempotency, objectId(), validate, asyncHandler(async (req, res) => {
   const hold = await ReservationHold.findOne({ _id: req.params.id, customer: req.user.id });
   if (!hold) throw new AppError('Reservation hold not found', 404, 'NOT_FOUND');
   if (hold.status !== 'active') throw new AppError('Only an active hold can be released', 409, 'INVALID_STATE');
@@ -83,6 +94,7 @@ router.delete('/holds/:id', objectId(), validate, asyncHandler(async (req, res) 
 
 router.post('/',
   allowRoles('customer'),
+  idempotency,
   body('holdId').optional().isMongoId().withMessage('holdId must be a valid ID'),
   body('equipmentId').optional().isMongoId().withMessage('equipmentId must be a valid ID'),
   body('address').optional().trim().notEmpty().withMessage('Delivery address must not be empty'),
@@ -109,7 +121,8 @@ router.post('/',
     }
     if (!existingHold) throw new AppError('Hold is missing, expired, or already used', 409, 'HOLD_EXPIRED');
     let booking;
-    let delivery;
+    let rental;
+    let deliveries = [];
     try {
       await withReservationLocks(existingHold.equipment, async () => {
       const hold = await ReservationHold.findOneAndUpdate(
@@ -118,7 +131,7 @@ router.post('/',
         { new: true }
       );
       if (!hold) throw new AppError('Hold is missing, expired, or already used', 409, 'HOLD_EXPIRED');
-      await assertAvailable(hold.equipment, hold.startDate, hold.endDate);
+      await assertAvailable(hold.equipment, hold.startDate, hold.endDate, undefined, hold.equipmentQuantities);
       const items = await Equipment.find({ _id: { $in: hold.equipment }, active: true });
       if (items.length !== hold.equipment.length) throw new AppError('An item is no longer available', 409, 'ITEM_UNAVAILABLE');
       const { rentalDays } = validateDates(hold.startDate, hold.endDate);
@@ -126,12 +139,16 @@ router.post('/',
       if (hold.package && !rentalPackage) throw new AppError('This package is no longer available', 409, 'PACKAGE_UNAVAILABLE');
       const owners = new Set(items.map((item) => item.owner.toString()));
       if (owners.size !== 1) throw new AppError('All items in a booking must belong to one owner', 400, 'MULTIPLE_OWNERS');
-      const subtotal = (rentalPackage ? rentalPackage.dailyRate : items.reduce((sum, item) => sum + item.dailyRate, 0)) * rentalDays;
-      const depositAmount = items.reduce((sum, item) => sum + item.depositAmount, 0);
+      const quantityByEquipment = new Map((hold.equipmentQuantities || []).map((line) => [String(line.equipment), line.quantity]));
+      const subtotal = rentalPackage
+        ? rentalPackage.dailyRate * rentalDays
+        : items.reduce((sum, item) => sum + item.dailyRate * (quantityByEquipment.get(String(item._id)) || 1) * rentalDays, 0);
+      const depositAmount = items.reduce((sum, item) => sum + item.depositAmount * (quantityByEquipment.get(String(item._id)) || 1), 0);
       booking = await Booking.create({
         customer: req.user.id,
         owner: items[0].owner,
         equipment: items.map((item) => item._id),
+        equipmentQuantities: hold.equipmentQuantities,
         assets: hold.assets?.length ? hold.assets : items.map((item) => item.assetRef),
         ...(rentalPackage ? { package: rentalPackage._id } : {}),
         startDate: hold.startDate,
@@ -146,15 +163,43 @@ router.post('/',
         hold: hold._id,
         notes: req.body.notes || ''
       });
-      delivery = await Delivery.create({ booking: booking._id, address: req.body.address || items[0].location.city });
-      booking.delivery = delivery._id;
+      rental = await Rental.create({
+        booking: booking._id,
+        customer: booking.customer,
+        owner: booking.owner,
+        equipment: booking.equipment,
+        equipmentQuantities: booking.equipmentQuantities,
+        startDate: booking.startDate,
+        endDate: booking.endDate,
+        rentalDays: booking.rentalDays,
+        pricing: {
+          rentalSubtotal: booking.subtotal,
+          securityDeposit: booking.depositAmount,
+          grandTotal: booking.totalAmount,
+          currency: booking.currency
+        },
+        deliveryAddress: req.body.address || items[0].location.city
+      });
+      booking.rental = rental._id;
+      deliveries = await Delivery.insertMany(items.map((item) => ({
+        rental: rental._id,
+        booking: booking._id,
+        equipment: item._id,
+        customer: booking.customer,
+        owner: booking.owner,
+        address: req.body.address || item.location.city
+      })));
+      booking.deliveries = deliveries.map((item) => item._id);
+      booking.delivery = deliveries[0]?._id;
       await booking.save();
       });
+      await notify(booking.owner, 'booking_created', 'New booking request', 'A customer has requested an equipment rental.', { bookingId: booking.id });
       return sendSuccess(res, 'Booking created. Complete checkout within 10 minutes.', {
         booking: presentBooking(booking), reservationHold: existingHold
       }, 201);
     } catch (error) {
-      if (delivery) await Delivery.deleteOne({ _id: delivery._id });
+      if (deliveries.length) await Delivery.deleteMany({ _id: { $in: deliveries.map((item) => item._id) } });
+      if (rental) await Rental.deleteOne({ _id: rental._id });
       if (booking) await Booking.deleteOne({ _id: booking._id });
       await ReservationHold.updateOne({ _id: existingHold._id, status: 'converted' }, { $set: { status: 'released' } });
       throw error;
@@ -162,7 +207,7 @@ router.post('/',
   })
 );
 
-router.post('/:id/pay', objectId(), validate, asyncHandler(async (req, res) => {
+router.post('/:id/pay', allowRoles('customer'), idempotency, objectId(), validate, asyncHandler(async (req, res) => {
   const now = new Date();
   const previousPayment = await Payment.findOne({
     booking: req.params.id, customer: req.user.id, status: 'succeeded'
@@ -322,7 +367,7 @@ router.post('/:id/pay', objectId(), validate, asyncHandler(async (req, res) => {
   }
 }));
 
-router.post('/:id/hold', allowRoles('customer'), objectId(), validate, asyncHandler(async (req, res) => {
+router.post('/:id/hold', allowRoles('customer'), idempotency, objectId(), validate, asyncHandler(async (req, res) => {
   const now = new Date();
   const booking = await Booking.findOne({ _id: req.params.id, customer: req.user.id, status: { $in: ['pending_payment', 'approved'] } });
   if (!booking) throw new AppError('Only your pending booking can be held', 404, 'NOT_FOUND');
@@ -343,12 +388,19 @@ router.get(['/my', '/mine'], allowRoles('customer'), asyncHandler(async (req, re
   const bookings = await Booking.find({ customer: req.user.id })
     .populate('equipment', 'name images dailyRate')
     .populate('owner', 'name')
+    .populate('rental', 'status startDate endDate paymentStatus')
     .populate('delivery')
     .sort({ createdAt: -1 });
-  return sendSuccess(res, 'Your bookings', bookings.map(presentBooking));
+  const reviews = await Review.find({ booking: { $in: bookings.map((booking) => booking._id) } })
+    .select('booking rating comment createdAt').lean();
+  const reviewByBooking = new Map(reviews.map((review) => [String(review.booking), review]));
+  return sendSuccess(res, 'Your bookings', bookings.map((booking) => ({
+    ...presentBooking(booking),
+    review: reviewByBooking.get(String(booking._id)) || null
+  })));
 }));
 
-router.get('/:id', objectId(), validate, asyncHandler(async (req, res) => {
+router.get('/:id', allowRoles('customer', 'owner', 'admin'), objectId(), validate, asyncHandler(async (req, res) => {
   const booking = await Booking.findById(req.params.id)
     .populate('equipment')
     .populate('customer', 'name email')
@@ -362,7 +414,7 @@ router.get('/:id', objectId(), validate, asyncHandler(async (req, res) => {
   return sendSuccess(res, 'Booking details', presentBooking(booking));
 }));
 
-router.post('/:id/cancel', objectId(), validate, asyncHandler(async (req, res) => {
+router.post('/:id/cancel', allowRoles('customer'), idempotency, objectId(), body('reason').optional().isString().isLength({ max: 1000 }), validate, asyncHandler(async (req, res) => {
   const booking = await Booking.findOne({ _id: req.params.id, customer: req.user.id });
   if (!booking) throw new AppError('Booking not found', 404, 'NOT_FOUND');
   if (booking.status === 'cancelled') {
@@ -374,7 +426,7 @@ router.post('/:id/cancel', objectId(), validate, asyncHandler(async (req, res) =
   }
   const cancelled = await Booking.findOneAndUpdate(
     { _id: booking._id, customer: req.user.id, status: booking.status, startDate: { $gt: new Date() } },
-    { $set: { status: 'cancelled' } },
+    { $set: { status: 'cancelled', cancelledBy: req.user.id, cancellationReason: req.body.reason || '', cancelledAt: new Date() } },
     { new: true }
   );
   if (!cancelled) throw new AppError('Booking changed while cancellation was being processed', 409, 'INVALID_STATE');
@@ -382,9 +434,9 @@ router.post('/:id/cancel', objectId(), validate, asyncHandler(async (req, res) =
   return sendSuccess(res, 'Booking cancelled; mock payment and deposit refunded when applicable', cancelled);
 }));
 
-router.patch('/:id/status', objectId(), body('status').isIn([
+router.patch('/:id/status', allowRoles('customer', 'owner'), idempotency, objectId(), body('status').isIn([
   'confirmed', 'approved', 'cancelled', 'rejected', 'declined', 'in_progress', 'completed'
-]), validate, asyncHandler(async (req, res) => {
+]), body('reason').optional().isString().isLength({ max: 1000 }), validate, asyncHandler(async (req, res) => {
   const booking = await Booking.findById(req.params.id);
   if (!booking) throw new AppError('Booking not found', 404, 'NOT_FOUND');
   const desired = req.body.status;
@@ -401,13 +453,15 @@ router.patch('/:id/status', objectId(), body('status').isIn([
       throw new AppError('This booking cannot be cancelled', 409, 'INVALID_STATE');
     }
     booking.status = 'cancelled';
+    booking.cancelledBy = req.user.id;
+    booking.cancellationReason = req.body.reason || '';
+    booking.cancelledAt = new Date();
     await booking.save();
     await setAssetsLifecycle(booking.equipment, 'listed');
     await settleBookingCancellation(booking);
     return sendSuccess(res, 'Booking cancelled', booking);
   }
-  if (!['owner', 'admin'].includes(req.user.role) ||
-    (req.user.role !== 'admin' && booking.owner.toString() !== req.user.id)) {
+  if (req.user.role !== 'owner' || booking.owner.toString() !== req.user.id) {
     throw new AppError('Only the booking owner may update its status', 403, 'FORBIDDEN');
   }
   if (desired === 'cancelled' && booking.status === 'cancelled') {
@@ -494,6 +548,9 @@ router.patch('/:id/status', objectId(), body('status').isIn([
       throw new AppError('This booking cannot be cancelled', 409, 'INVALID_STATE');
     }
     booking.status = 'cancelled';
+    booking.cancelledBy = req.user.id;
+    booking.cancellationReason = req.body.reason || '';
+    booking.cancelledAt = new Date();
     await booking.save();
     await setAssetsLifecycle(booking.equipment, 'listed');
     await settleBookingCancellation(booking);
@@ -537,7 +594,7 @@ router.patch('/:id/status', objectId(), body('status').isIn([
   throw new AppError('That booking status transition is not available through this endpoint', 409, 'INVALID_STATE');
 }));
 
-router.post('/:id/return', objectId(), validate, asyncHandler(async (req, res) => {
+router.post('/:id/return', allowRoles('customer', 'owner'), idempotency, objectId(), validate, asyncHandler(async (req, res) => {
   const booking = await Booking.findById(req.params.id);
   if (!booking) throw new AppError('Booking not found', 404, 'NOT_FOUND');
   const ownerRecordingReturn = req.user.role === 'owner' && booking.owner.toString() === req.user.id;
@@ -569,6 +626,7 @@ router.post('/:id/return', objectId(), validate, asyncHandler(async (req, res) =
 
 router.post('/:id/inspection',
   allowRoles('owner'),
+  idempotency,
   objectId(),
   body('condition').optional().isIn(['good', 'minor_damage', 'needs_repair', 'new', 'excellent', 'fair']),
   body('deductionAmount').optional().isFloat({ min: 0 }),
@@ -634,6 +692,7 @@ router.post('/:id/inspection',
 
 router.post('/:id/reviews',
   allowRoles('customer'),
+  idempotency,
   objectId(),
   body('rating').isInt({ min: 1, max: 5 }).withMessage('Rating must be from 1 to 5'),
   body('comment').optional().isString().isLength({ max: 2000 }),
@@ -642,8 +701,9 @@ router.post('/:id/reviews',
     const booking = await Booking.findOne({ _id: req.params.id, customer: req.user.id, status: 'completed' });
     if (!booking) throw new AppError('A review requires a completed booking you own', 403, 'FORBIDDEN');
     if (booking.equipment.length !== 1) throw new AppError('Review each item in a multi-item booking separately is not supported', 400, 'INVALID_BOOKING');
+    if (await Review.exists({ booking: booking._id })) throw new AppError('This rental has already been reviewed', 409, 'REVIEW_EXISTS');
     const review = await Review.create({
-      booking: booking._id, customer: req.user.id, equipment: booking.equipment[0],
+      booking: booking._id, rental: booking.rental || null, customer: req.user.id, owner: booking.owner, equipment: booking.equipment[0],
       rating: Number(req.body.rating), comment: req.body.comment || ''
     });
     return sendSuccess(res, 'Review created', review, 201);

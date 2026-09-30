@@ -21,15 +21,9 @@ assets, supports English/Hindi/Tamil search, and displays prices in Indian rupee
    npm install
    ```
 
-2. Copy `.env.example` to `server/.env` and set a unique `JWT_SECRET`.
+2. Copy `server/.env.example` to `server/.env` and set a unique `JWT_SECRET`.
 3. Start MongoDB.
-4. Seed the development database:
-
-   ```powershell
-   npm run seed
-   ```
-
-5. Start the API and Vite app:
+4. Start the API and Vite app:
 
    ```powershell
    npm run dev
@@ -39,17 +33,39 @@ The web app runs at `http://localhost:5173` and the API at
 `http://localhost:5000/api`.
 Versioned catalog search is available at `/api/v1/search`; the existing
 `/api/equipment` routes remain as compatibility endpoints for the current UI.
+Authentication is available at `/api/auth/register`, `/api/auth/login`,
+`/api/auth/me`, and `/api/auth/logout`. Registration supports customer, owner,
+and transporter accounts; administrator accounts cannot self-register.
+Passwords are bcrypt-hashed and sessions use revocable JWT bearer tokens.
+Register an account, then promote the first administrator from the project root
+with `npm run admin:promote -- your-email@example.com`. New databases start
+without sample accounts, bookings, or rental history. Create real marketplace
+categories from the admin workspace before owners list equipment. To hide known
+legacy starter inventory safely, preview with `npm run demo:clean` and apply
+with `npm run demo:clean -- --apply`.
 
-## Development demo accounts
+## Application foundation
 
-These accounts are for local development only. Change or remove them before
-deploying:
+The client is organized by responsibility under `client/src`: `pages`,
+`components`, `layouts`, `services`, `hooks`, `utils`, `context`, and
+`translations`. Axios configuration and response helpers live in
+`services/api.js`; data reads made through `useLoad` use the shared TanStack
+Query cache. Tailwind CSS utilities are available alongside the existing
+stylesheet; Tailwind preflight is intentionally not enabled, to avoid changing
+the established UI globally.
 
-| Role | Email | Password |
-| --- | --- | --- |
-| Customer | `customer@rentalhub.com` | `Customer@123` |
-| Owner | `owner@rentalhub.com` | `Owner@123` |
-| Admin | `admin@rentalhub.com` | `Admin@123` |
+The Express API is organized under `server/src` into `routes`, `controllers`,
+`services`, `models`, `middleware`, `validators`, `utils`, `sockets`, and
+`config`. Route modules own endpoint paths and validation; controllers contain
+request handling where separated, while domain services own reusable business
+operations. Success and error responses use the documented JSON envelopes.
+Socket.IO is attached to the API HTTP server and requires a valid JWT; no
+browser socket client is enabled until a product workflow needs real-time
+events.
+
+Server variables are documented in `server/.env.example`. Optional frontend
+configuration is in `client/.env.example`; leave `VITE_API_URL` unset to use
+the Vite `/api` proxy in development.
 
 Mock payments are the local default; no payment card data is stored or sent to
 a provider in mock mode. State-changing booking, swap, and owner APIs persist
@@ -60,11 +76,11 @@ Razorpay test/live checkout can be selected with server-side environment
 credentials; the browser receives only the public key ID. See
 [`server/README.md`](./server/README.md) for webhook setup and required events.
 
-The seed provides eight India-first categories, 40 catalog equipment types,
-80 physical assets across Indian cities, and five task-oriented rental
-packages. Re-running it is idempotent and preserves non-demo user accounts.
-It also migrates legacy inventory records into the asset model without
-deleting their booking IDs.
+New installations show honest empty states until administrators configure the
+catalog and real owners publish equipment. Application startup never deletes
+existing records; the opt-in cleanup only deactivates exact historical fixture
+records and skips those connected to active rentals, unexpired holds, active
+deliveries, or open swaps. Completed transaction history remains intact.
 
 The current system is a modular-monolith MVP, not a claim of production
 enterprise scale: payments are mocked, and distributed queues, object storage,
@@ -77,5 +93,9 @@ for local development.
 
 - `npm run dev` — run API and web app in development mode.
 - `npm run build` — create the production frontend build.
-- `npm run seed` — load development demo records into MongoDB.
+- `npm test --workspace server` — run backend unit and integration tests.
+- `npm run admin:promote -- your-email@example.com` — promote a registered account to administrator.
+- `npm run demo:seed` — preview five image-backed owner listings per active category and five rental bundles; run `npm run demo:seed -- --apply` to create them.
+- `npm run demo:clean` — preview cleanup of known legacy demo inventory and packages.
+- `npm run demo:clean -- --apply` — deactivate unreferenced known demo inventory and packages.
 - `npm start` — start the API server.

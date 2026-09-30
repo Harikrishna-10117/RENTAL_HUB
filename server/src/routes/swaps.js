@@ -8,7 +8,7 @@ const EquipmentEvent = require('../models/EquipmentEvent');
 const { AppError, asyncHandler, sendSuccess } = require('../utils/api');
 const { protect, allowRoles } = require('../middleware/auth');
 const validate = require('../middleware/validate');
-const { body, objectId } = require('../utils/validation');
+const { body, objectId } = require('../validators');
 const idempotency = require('../middleware/idempotency');
 const notify = require('../utils/notifications');
 const { assertAvailable, withReservationLocks } = require('../services/availability');
@@ -18,11 +18,10 @@ const { isRazorpayEnabled } = require('../services/razorpay');
 
 const router = express.Router();
 router.use(protect);
-router.use((req, res, next) => (
-  ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) ? idempotency(req, res, next) : next()
-));
 
 router.post('/',
+  allowRoles('customer'),
+  idempotency,
   body('requestedEquipment').optional().isMongoId(),
   body('swapType').optional().isIn(['item_for_item', 'item_plus_cash', 'cash_for_item']),
   body('offeredEquipment').optional().isMongoId(),
@@ -32,7 +31,6 @@ router.post('/',
   body('description').optional().isString().isLength({ max: 1000 }),
   validate,
   asyncHandler(async (req, res) => {
-    if (req.user.role !== 'customer') throw new AppError('Only customers can request swaps', 403, 'FORBIDDEN');
     if (req.body.bookingId) {
       const booking = await Booking.findOne({
         _id: req.body.bookingId, customer: req.user.id, status: 'in_progress'
@@ -126,8 +124,7 @@ router.post('/',
   })
 );
 
-router.get('/mine', asyncHandler(async (req, res) => {
-  if (req.user.role !== 'customer') throw new AppError('Only customers can view their swaps', 403, 'FORBIDDEN');
+router.get('/mine', allowRoles('customer'), asyncHandler(async (req, res) => {
   const [sent, received] = await Promise.all([
     SwapRequest.find({ requester: req.user.id }).populate('offeredEquipment requestedEquipment recipient', 'name dailyRate replacementValue name email').sort({ createdAt: -1 }),
     SwapRequest.find({ recipient: req.user.id }).populate('offeredEquipment requestedEquipment requester', 'name dailyRate replacementValue name email').sort({ createdAt: -1 })
@@ -135,8 +132,7 @@ router.get('/mine', asyncHandler(async (req, res) => {
   return sendSuccess(res, 'Your swap requests', { sent, received });
 }));
 
-router.get('/my', asyncHandler(async (req, res) => {
-  if (req.user.role !== 'customer') throw new AppError('Only customers can view their swaps', 403, 'FORBIDDEN');
+router.get('/my', allowRoles('customer'), asyncHandler(async (req, res) => {
   const swaps = await SwapRequest.find({ requester: req.user.id })
     .populate({ path: 'booking', select: 'startDate endDate status totalAmount customer', populate: { path: 'equipment', select: 'name images dailyRate' } })
     .populate('offeredEquipment requestedEquipment', 'name images dailyRate replacementValue')
@@ -170,6 +166,7 @@ router.get('/owner', allowRoles('owner'), asyncHandler(async (req, res) => {
 
 router.patch('/:id/respond',
   allowRoles('owner'),
+  idempotency,
   objectId(),
   body('decision').isIn(['accepted', 'rejected']),
   validate,
@@ -186,6 +183,7 @@ router.patch('/:id/respond',
 
 router.patch('/:id/status',
   allowRoles('owner'),
+  idempotency,
   objectId(),
   body('status').isIn(['accepted', 'approved', 'rejected']),
   validate,
@@ -293,7 +291,7 @@ router.patch('/:id/status',
   })
 );
 
-router.post('/:id/cancel', allowRoles('customer'), objectId(), validate, asyncHandler(async (req, res) => {
+router.post('/:id/cancel', allowRoles('customer'), idempotency, objectId(), validate, asyncHandler(async (req, res) => {
   const swap = await SwapRequest.findOne({ _id: req.params.id, requester: req.user.id, status: 'pending' });
   if (!swap) throw new AppError('Pending swap request not found', 404, 'NOT_FOUND');
   swap.status = 'cancelled';

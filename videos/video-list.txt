@@ -1,0 +1,4 @@
+﻿file videos/frames/frame-1-home.png
+file videos/frames/frame-2-equipment.png
+file videos/frames/frame-3-owner-signup.png
+file videos/frames/frame-4-login.png

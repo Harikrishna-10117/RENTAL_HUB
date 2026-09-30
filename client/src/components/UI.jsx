@@ -2,7 +2,8 @@ import { AlertCircle, ArrowRight, LoaderCircle, PackageOpen } from 'lucide-react
 import { Link } from 'react-router-dom';
 import { useState } from 'react';
 import { useLocale } from '../context/LocaleContext.jsx';
-import { localizedName } from '../lib/india.js';
+import { localizedName } from '../utils/india.js';
+import { messages } from '../translations/index.js';
 
 function locationLabel(location) {
   if (typeof location === 'string') return location;
@@ -58,8 +59,11 @@ export function EmptyState({ title, message, action }) {
 }
 
 export function StatusBadge({ children }) {
+  const { locale } = useLocale();
   const value = String(children ?? 'pending').toLowerCase().replace(/[\s_]+/g, '-');
-  return <span className={`status-badge status-${value}`}>{String(children || 'Pending').replace(/[_-]/g, ' ')}</span>;
+  const translationKey = `status${value.split('-').map((part) => part[0]?.toUpperCase() + part.slice(1)).join('')}`;
+  const translated = messages[locale]?.[translationKey];
+  return <span className={`status-badge status-${value}`}>{translated || String(children || 'Pending').replace(/[_-]/g, ' ')}</span>;
 }
 
 export function EquipmentCard({ item }) {
